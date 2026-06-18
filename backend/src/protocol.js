@@ -3,7 +3,8 @@ const MAGIC = 0xA55A;
 const MSG_TYPE = {
   COMMAND: 0x01,
   STATUS: 0x02,
-  ACK: 0x03
+  ACK: 0x03,
+  SET_RATE: 0x04
 };
 
 const FLIGHT_MODE = {
@@ -11,6 +12,21 @@ const FLIGHT_MODE = {
   WAYPOINT: 0x01,
   RETURN: 0x02
 };
+
+const DRONE_STATUS_SIZE = 36;
+
+function encodeSetRate(intervalMs) {
+  const headerSize = 5;
+  const payloadSize = 4;
+  const buffer = Buffer.alloc(headerSize + payloadSize);
+
+  buffer.writeUInt16BE(MAGIC, 0);
+  buffer.writeUInt8(MSG_TYPE.SET_RATE, 2);
+  buffer.writeUInt16BE(payloadSize, 3);
+  buffer.writeUInt32BE(intervalMs, 5);
+
+  return buffer;
+}
 
 function encodeCommand(droneId, waypoints, speed, mode) {
   const headerSize = 5;
@@ -56,10 +72,9 @@ function decodeStatus(buffer) {
   const count = buffer.readUInt8(3);
   const drones = [];
   let offset = 4;
-  const droneSize = 1 + 8 + 8 + 4 + 2 + 4 + 4 + 4 + 1;
 
   for (let i = 0; i < count; i++) {
-    if (offset + droneSize > buffer.length) break;
+    if (offset + DRONE_STATUS_SIZE > buffer.length) break;
 
     drones.push({
       id: buffer.readUInt8(offset),
@@ -72,7 +87,7 @@ function decodeStatus(buffer) {
       yaw: buffer.readFloatBE(offset + 31),
       status: buffer.readUInt8(offset + 35)
     });
-    offset += droneSize;
+    offset += DRONE_STATUS_SIZE;
   }
 
   return { type: 'status', drones, timestamp: Date.now() };
@@ -104,7 +119,7 @@ function parseBuffer(buffer, bufferAccumulator) {
     if (msgType === MSG_TYPE.STATUS) {
       if (bufferAccumulator.length < 4) break;
       const count = bufferAccumulator.readUInt8(3);
-      const totalLen = 4 + count * 36;
+      const totalLen = 4 + count * DRONE_STATUS_SIZE;
 
       if (bufferAccumulator.length < totalLen) break;
 
@@ -130,12 +145,54 @@ function parseBuffer(buffer, bufferAccumulator) {
   return { messages, bufferAccumulator };
 }
 
+function fastParseStatus(buffer, bufferAccumulator, stateManager) {
+  bufferAccumulator = Buffer.concat([bufferAccumulator, buffer]);
+  let ackCount = 0;
+
+  while (bufferAccumulator.length >= 5) {
+    const magic = bufferAccumulator.readUInt16BE(0);
+    if (magic !== MAGIC) {
+      bufferAccumulator = bufferAccumulator.slice(1);
+      continue;
+    }
+
+    const msgType = bufferAccumulator.readUInt8(2);
+
+    if (msgType === MSG_TYPE.STATUS) {
+      if (bufferAccumulator.length < 4) break;
+      const count = bufferAccumulator.readUInt8(3);
+      const totalLen = 4 + count * DRONE_STATUS_SIZE;
+
+      if (bufferAccumulator.length < totalLen) break;
+
+      stateManager.updateFromBuffer(bufferAccumulator, 4, count);
+      bufferAccumulator = bufferAccumulator.slice(totalLen);
+    } else if (msgType === MSG_TYPE.ACK) {
+      const totalLen = 6;
+      if (bufferAccumulator.length < totalLen) break;
+      ackCount++;
+      bufferAccumulator = bufferAccumulator.slice(totalLen);
+    } else {
+      const length = bufferAccumulator.readUInt16BE(3);
+      const totalLen = 5 + length;
+
+      if (bufferAccumulator.length < totalLen) break;
+      bufferAccumulator = bufferAccumulator.slice(totalLen);
+    }
+  }
+
+  return { ackCount, bufferAccumulator };
+}
+
 export {
   MAGIC,
   MSG_TYPE,
   FLIGHT_MODE,
+  DRONE_STATUS_SIZE,
   encodeCommand,
+  encodeSetRate,
   decodeStatus,
   decodeAck,
-  parseBuffer
+  parseBuffer,
+  fastParseStatus
 };

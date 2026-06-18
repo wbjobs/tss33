@@ -18,6 +18,10 @@ const PORT = 8080;
 const GATEWAY_HOST = '127.0.0.1';
 const GATEWAY_PORT = 9000;
 
+const MAX_SEND_RATE = 60;
+const MIN_SEND_INTERVAL = 1000 / MAX_SEND_RATE;
+const STATS_LOG_INTERVAL = 5000;
+
 const pfxPath = path.resolve(__dirname, '../../certs/cert.pfx');
 
 if (!fs.existsSync(pfxPath)) {
@@ -29,6 +33,83 @@ const stateManager = new StateManager();
 const gatewayClient = new GatewayClient(GATEWAY_HOST, GATEWAY_PORT, stateManager);
 
 const sessions = new Set();
+
+let _encodedCache = null;
+let _encodedVersion = -1;
+let _lastSendTime = 0;
+let _sendTimer = null;
+let _pendingSend = false;
+
+let _totalSent = 0;
+let _totalDropped = 0;
+let _lastStatsTime = Date.now();
+let _sentSinceStats = 0;
+let _maxLatency = 0;
+
+function encodeStatusSnapshot() {
+  const version = stateManager.getVersion();
+  if (_encodedCache && _encodedVersion === version) {
+    return _encodedCache;
+  }
+
+  const snapshot = stateManager.getSnapshot();
+  const jsonStr = JSON.stringify({ type: 'status', ...snapshot }) + '\n';
+  _encodedCache = Buffer.from(jsonStr, 'utf8');
+  _encodedVersion = version;
+  return _encodedCache;
+}
+
+function scheduleStatusBroadcast() {
+  if (_pendingSend) return;
+  _pendingSend = true;
+
+  const now = Date.now();
+  const elapsed = now - _lastSendTime;
+
+  if (elapsed >= MIN_SEND_INTERVAL) {
+    broadcastStatus();
+  } else {
+    _sendTimer = setTimeout(() => {
+      _sendTimer = null;
+      broadcastStatus();
+    }, MIN_SEND_INTERVAL - elapsed);
+  }
+}
+
+function broadcastStatus() {
+  _pendingSend = false;
+  _lastSendTime = Date.now();
+
+  const data = encodeStatusSnapshot();
+  let sent = 0;
+  let failed = 0;
+
+  for (const session of sessions) {
+    if (session._closed) continue;
+
+    try {
+      if (session._useDatagram && session._datagramWriter) {
+        session._datagramWriter.write(data).catch(() => {
+          session._useDatagram = false;
+          console.log('Session falling back to streams');
+        });
+      } else if (session._streamWriter) {
+        session._streamWriter.write(data).catch(() => {});
+      }
+      sent++;
+    } catch (e) {
+      failed++;
+    }
+  }
+
+  _totalSent++;
+  _sentSinceStats++;
+
+  if (sent > 0 && _totalSent % 100 === 0) {
+    const latency = Date.now() - stateManager.lastUpdate;
+    _maxLatency = Math.max(_maxLatency, latency);
+  }
+}
 
 async function readFromStream(readable) {
   const reader = readable.getReader();
@@ -51,20 +132,17 @@ async function readFromStream(readable) {
           const cmd = JSON.parse(line);
           handleCommand(cmd);
         } catch (e) {
-          console.error('Parse command error:', e.message, line);
+          console.error('Parse command error:', e.message);
         }
       }
     }
   } catch (e) {
-    console.log('Stream closed');
   } finally {
     reader.releaseLock();
   }
 }
 
 function handleCommand(cmd) {
-  console.log('Received command:', cmd.type);
-
   switch (cmd.type) {
     case 'mission': {
       const { droneId, waypoints, speed, mode } = cmd;
@@ -79,10 +157,18 @@ function handleCommand(cmd) {
       const flightMode = mode === 'waypoint' ? FLIGHT_MODE.WAYPOINT :
                          mode === 'return' ? FLIGHT_MODE.RETURN : FLIGHT_MODE.HOVER;
 
-      const snapshot = stateManager.getSnapshot();
-      for (const drone of snapshot.drones) {
+      const droneCount = stateManager.getDroneCount();
+      const drones = stateManager.drones;
+      for (const drone of drones.values()) {
         gatewayClient.sendCommand(drone.id, waypoints, speed || 5.0, flightMode);
       }
+      break;
+    }
+    case 'set_rate': {
+      const { rate } = cmd;
+      const clampedRate = Math.max(1, Math.min(120, rate));
+      gatewayClient.setMinUpdateInterval(1000 / clampedRate);
+      console.log(`Client requested rate: ${clampedRate}/s`);
       break;
     }
     default:
@@ -92,72 +178,61 @@ function handleCommand(cmd) {
 
 async function handleSession(session) {
   sessions.add(session);
-  console.log('New WebTransport session connected');
+  session._closed = false;
+  session._useDatagram = true;
+  session._datagramWriter = null;
+  session._streamWriter = null;
 
-  let datagramWriter;
-  let streamWriter;
-  let useDatagram = true;
+  console.log('New WebTransport session connected, total:', sessions.size);
 
   try {
-    datagramWriter = session.datagrams.writable.getWriter();
-    console.log('Using datagrams for status updates');
-  } catch (e) {
-    console.log('Datagrams not available, using streams for status updates');
-    useDatagram = false;
-  }
-
-  const sendStatus = async (snapshot) => {
     try {
-      const data = JSON.stringify({ type: 'status', ...snapshot }) + '\n';
-      const encoded = new TextEncoder().encode(data);
+      session._datagramWriter = session.datagrams.writable.getWriter();
+    } catch (e) {
+      session._useDatagram = false;
+    }
 
-      if (useDatagram && datagramWriter) {
-        try {
-          await datagramWriter.write(encoded);
-        } catch (e) {
-          useDatagram = false;
-          console.log('Falling back to streams for status updates');
-        }
-      }
+    if (!session._useDatagram) {
+      const stream = await session.createUnidirectionalStream();
+      session._streamWriter = stream.writable.getWriter();
+    }
 
-      if (!useDatagram) {
-        if (!streamWriter) {
-          const stream = await session.createUnidirectionalStream();
-          streamWriter = stream.writable.getWriter();
+    if (stateManager.getDroneCount() > 0) {
+      const data = encodeStatusSnapshot();
+      try {
+        if (session._useDatagram && session._datagramWriter) {
+          session._datagramWriter.write(data).catch(() => {});
+        } else if (session._streamWriter) {
+          session._streamWriter.write(data).catch(() => {});
         }
-        streamWriter.write(encoded).catch(() => {});
+      } catch (e) {}
+    }
+
+    try {
+      for await (const stream of session.incomingBidirectionalStreams) {
+        readFromStream(stream.readable);
       }
     } catch (e) {
-      console.error('Send status error:', e.message);
-    }
-  };
-
-  const unsubscribe = stateManager.subscribe(sendStatus);
-
-  const initialSnapshot = stateManager.getSnapshot();
-  if (initialSnapshot.drones.length > 0) {
-    sendStatus(initialSnapshot);
-  }
-
-  try {
-    for await (const stream of session.incomingBidirectionalStreams) {
-      readFromStream(stream.readable);
     }
   } catch (e) {
     console.log('Session error:', e.message);
   } finally {
-    unsubscribe();
+    session._closed = true;
     try {
-      if (datagramWriter) datagramWriter.releaseLock();
-      if (streamWriter) streamWriter.releaseLock();
+      if (session._datagramWriter) session._datagramWriter.releaseLock();
+      if (session._streamWriter) session._streamWriter.releaseLock();
     } catch (e) {}
     sessions.delete(session);
-    console.log('WebTransport session disconnected');
+    console.log('WebTransport session disconnected, remaining:', sessions.size);
   }
 }
 
 async function main() {
   gatewayClient.connect();
+
+  stateManager.subscribe(() => {
+    scheduleStatusBroadcast();
+  });
 
   const { ReadableStream } = await import('node:stream/web');
 
@@ -210,7 +285,6 @@ async function main() {
       console.error('Server error:', err);
     },
     onSessionRequest(args) {
-      console.log('Session request from:', args.header?.[':authority'] || 'unknown');
       return Promise.resolve({ accept: true });
     },
     setRequestCallback() {},
@@ -238,10 +312,31 @@ async function main() {
 
   console.log(`WebTransport server starting on port ${PORT}`);
 
+  setInterval(logServerStats, STATS_LOG_INTERVAL);
+
   const sessionStream = serverObj.sessionStream('/');
   for await (const session of sessionStream) {
     handleSession(session);
   }
+}
+
+function logServerStats() {
+  const now = Date.now();
+  const elapsed = (now - _lastStatsTime) / 1000;
+  const sendRate = Math.round(_sentSinceStats / elapsed);
+
+  console.log(
+    `[Server] sessions=${sessions.size} ` +
+    `send_rate=${sendRate}/s ` +
+    `drones=${stateManager.getDroneCount()} ` +
+    `state_version=${stateManager.getVersion()} ` +
+    `gateway_rate=${gatewayClient.getStatusRate()}/s ` +
+    `throttled=${gatewayClient.isThrottled()}`
+  );
+
+  _sentSinceStats = 0;
+  _maxLatency = 0;
+  _lastStatsTime = now;
 }
 
 function getCertFingerprint() {

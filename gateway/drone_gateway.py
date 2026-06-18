@@ -16,8 +16,10 @@ FLIGHT_MODE_HOVER = 0x00
 FLIGHT_MODE_WAYPOINT = 0x01
 FLIGHT_MODE_RETURN = 0x02
 
-DRONE_COUNT = 5
-STATUS_INTERVAL = 1.0
+DRONE_COUNT = 20
+STATUS_INTERVAL = 0.2
+
+MSG_TYPE_SET_RATE = 0x04
 
 
 @dataclass
@@ -51,6 +53,7 @@ class DroneGateway:
         self.drones = self._init_drones()
         self.lock = threading.Lock()
         self.running = True
+        self.status_interval = STATUS_INTERVAL
 
     def _init_drones(self) -> List[DroneState]:
         drones = []
@@ -108,6 +111,14 @@ class DroneGateway:
                 'speed': speed,
                 'mode': mode
             }
+        elif msg_type == MSG_TYPE_SET_RATE:
+            payload = data[5:5 + length]
+            if len(payload) < 4:
+                return -1, {}
+            interval_ms = struct.unpack('>I', payload[:4])[0]
+            return msg_type, {
+                'interval_ms': interval_ms
+            }
 
         return msg_type, {}
 
@@ -122,7 +133,7 @@ class DroneGateway:
                     drone.lat,
                     drone.lng,
                     drone.alt,
-                    drone.battery,
+                    int(drone.battery),
                     drone.roll,
                     drone.pitch,
                     drone.yaw,
@@ -172,7 +183,7 @@ class DroneGateway:
             try:
                 status_data = self._encode_status()
                 conn.sendall(status_data)
-                time.sleep(STATUS_INTERVAL)
+                time.sleep(self.status_interval)
             except Exception as e:
                 print(f"Status send error: {e}")
                 break
@@ -213,10 +224,14 @@ class DroneGateway:
                                 drone.current_waypoint_idx = 0
                                 drone.speed = cmd['speed']
                                 drone.mode = cmd['mode']
-                                print(f"Drone {drone_id} received command: {len(cmd['waypoints'])} waypoints, mode={cmd['mode']}")
                                 conn.sendall(self._encode_ack(True))
                             else:
                                 conn.sendall(self._encode_ack(False))
+                    elif msg_type_parsed == MSG_TYPE_SET_RATE:
+                        interval_ms = cmd['interval_ms']
+                        self.status_interval = max(0.02, min(5.0, interval_ms / 1000.0))
+                        print(f"Status rate set to {1.0/self.status_interval:.1f}/s (interval={self.status_interval*1000:.0f}ms)")
+                        conn.sendall(self._encode_ack(True))
 
         except Exception as e:
             print(f"Client error: {e}")
