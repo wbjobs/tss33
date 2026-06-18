@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import forge from 'node-forge';
 import StateManager from './stateManager.js';
 import GatewayClient from './gatewayClient.js';
+import PathPlannerClient from './pathPlannerClient.js';
 import { FLIGHT_MODE } from './protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,8 +32,10 @@ if (!fs.existsSync(pfxPath)) {
 
 const stateManager = new StateManager();
 const gatewayClient = new GatewayClient(GATEWAY_HOST, GATEWAY_PORT, stateManager);
+const pathPlanner = new PathPlannerClient();
 
 const sessions = new Set();
+const activePlannings = new Map();
 
 let _encodedCache = null;
 let _encodedVersion = -1;
@@ -111,6 +114,21 @@ function broadcastStatus() {
   }
 }
 
+function broadcastPlanningMessage(type, data) {
+  const jsonStr = JSON.stringify({ type, ...data, timestamp: Date.now() }) + '\n';
+  const buffer = Buffer.from(jsonStr, 'utf8');
+
+  for (const session of sessions) {
+    if (session._closed) continue;
+
+    try {
+      if (session._streamWriter) {
+        session._streamWriter.write(buffer).catch(() => {});
+      }
+    } catch (e) {}
+  }
+}
+
 async function readFromStream(readable) {
   const reader = readable.getReader();
   const decoder = new TextDecoder();
@@ -157,11 +175,14 @@ function handleCommand(cmd) {
       const flightMode = mode === 'waypoint' ? FLIGHT_MODE.WAYPOINT :
                          mode === 'return' ? FLIGHT_MODE.RETURN : FLIGHT_MODE.HOVER;
 
-      const droneCount = stateManager.getDroneCount();
       const drones = stateManager.drones;
       for (const drone of drones.values()) {
         gatewayClient.sendCommand(drone.id, waypoints, speed || 5.0, flightMode);
       }
+      break;
+    }
+    case 'formation': {
+      handleFormationCommand(cmd);
       break;
     }
     case 'set_rate': {
@@ -173,6 +194,113 @@ function handleCommand(cmd) {
     }
     default:
       console.log('Unknown command type:', cmd.type);
+  }
+}
+
+async function handleFormationCommand(cmd) {
+  const { formationType, centerLat, centerLng, centerAlt, targets, speed } = cmd;
+
+  console.log(`Formation request: ${formationType}, ${targets?.length || 0} targets`);
+
+  const drones = [];
+  for (const drone of stateManager.drones.values()) {
+    drones.push({
+      id: drone.id,
+      lat: drone.lat,
+      lng: drone.lng,
+      alt: drone.alt,
+      roll: drone.roll,
+      pitch: drone.pitch,
+      yaw: drone.yaw
+    });
+  }
+
+  if (drones.length === 0) {
+    broadcastPlanningMessage('formation_error', { message: 'No drones available' });
+    return;
+  }
+
+  const actualTargets = targets && targets.length > 0
+    ? targets.slice(0, drones.length)
+    : drones.map((d, i) => ({
+        lat: centerLat + (Math.random() - 0.5) * 0.002,
+        lng: centerLng + (Math.random() - 0.5) * 0.002,
+        alt: centerAlt || 100
+      }));
+
+  const requestId = crypto.randomUUID();
+  activePlannings.set(requestId, {
+    formationType,
+    droneCount: drones.length,
+    startTime: Date.now()
+  });
+
+  broadcastPlanningMessage('formation_started', {
+    requestId,
+    formationType,
+    droneCount: drones.length
+  });
+
+  try {
+    const onProgress = (data) => {
+      if (data.requestId === requestId) {
+        broadcastPlanningMessage('formation_progress', {
+          requestId,
+          iteration: data.iteration,
+          completed: data.completed,
+          total: data.total,
+          points: data.points
+        });
+      }
+    };
+
+    const onCompleted = (data) => {
+      if (data.requestId === requestId) {
+        cleanup();
+      }
+    };
+
+    const onError = (data) => {
+      if (data.requestId === requestId) {
+        cleanup();
+      }
+    };
+
+    const cleanup = () => {
+      pathPlanner.removeListener('planning:progress', onProgress);
+      pathPlanner.removeListener('planning:completed', onCompleted);
+      pathPlanner.removeListener('planning:error', onError);
+    };
+
+    pathPlanner.on('planning:progress', onProgress);
+    pathPlanner.on('planning:completed', onCompleted);
+    pathPlanner.on('planning:error', onError);
+
+    const result = await pathPlanner.planFormation(drones, actualTargets, speed || 5.0);
+    cleanup();
+
+    broadcastPlanningMessage('formation_completed', {
+      requestId,
+      formationType,
+      totalPoints: result.points.length,
+      duration: Date.now() - result.startTime
+    });
+
+    for (let i = 0; i < drones.length; i++) {
+      const droneId = drones[i].id;
+      const target = actualTargets[i] || actualTargets[actualTargets.length - 1];
+      gatewayClient.sendCommand(droneId, [target], speed || 5.0, FLIGHT_MODE.WAYPOINT);
+    }
+
+    activePlannings.delete(requestId);
+
+  } catch (err) {
+    console.error('Formation planning failed:', err);
+    broadcastPlanningMessage('formation_error', {
+      requestId,
+      message: err.message
+    });
+    activePlannings.delete(requestId);
   }
 }
 

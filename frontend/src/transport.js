@@ -8,6 +8,7 @@ class DroneTransport {
     this.commandStream = null;
     this.commandWriter = null;
     this.statusCallback = null;
+    this.messageCallback = null;
     this.connectionCallback = null;
     this.connected = false;
     this.reconnectDelay = 2000;
@@ -16,6 +17,10 @@ class DroneTransport {
 
   setStatusCallback(callback) {
     this.statusCallback = callback;
+  }
+
+  setMessageCallback(callback) {
+    this.messageCallback = callback;
   }
 
   setConnectionCallback(callback) {
@@ -73,6 +78,10 @@ class DroneTransport {
         this.lastLatency = Math.round(performance.now() - startTime);
         if (this.statusCallback) {
           this.statusCallback(data);
+        }
+      } else if (data.type && data.type.startsWith('formation_')) {
+        if (this.messageCallback) {
+          this.messageCallback(data);
         }
       }
     } catch (e) {

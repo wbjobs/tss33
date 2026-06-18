@@ -110,6 +110,75 @@
     }
     .latency-good { color: #00ff88; }
     .latency-bad { color: #ff4444; }
+    .formation-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 60px;
+      height: 60px;
+      margin: 4px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      color: white;
+      cursor: pointer;
+      transition: all 0.2s;
+      flex-direction: column;
+      font-size: 10px;
+    }
+    .formation-btn:hover {
+      border-color: #00d4ff;
+      background: rgba(0, 212, 255, 0.1);
+    }
+    .formation-btn.active {
+      border-color: #00d4ff;
+      background: rgba(0, 212, 255, 0.2);
+      box-shadow: 0 0 15px rgba(0, 212, 255, 0.3);
+    }
+    .formation-icon {
+      font-size: 24px;
+      margin-bottom: 2px;
+    }
+    .formation-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin: 8px 0;
+    }
+    .planning-status {
+      padding: 10px;
+      margin: 8px 0;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+    .planning-active {
+      background: rgba(0, 212, 255, 0.1);
+      border: 1px solid rgba(0, 212, 255, 0.3);
+      display: block;
+    }
+    .planning-done {
+      background: rgba(0, 255, 136, 0.1);
+      border: 1px solid rgba(0, 255, 136, 0.3);
+      display: block;
+    }
+    .planning-error {
+      background: rgba(255, 68, 68, 0.1);
+      border: 1px solid rgba(255, 68, 68, 0.3);
+      display: block;
+    }
+    .progress-bar {
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+      margin-top: 6px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00d4ff, #00ff88);
+      transition: width 0.3s;
+    }
   </style>
 </head>
 <body>
@@ -150,6 +219,34 @@
           <button class="btn" id="send-btn" disabled>发送任务</button>
           <button class="btn btn-secondary" id="clear-btn">清除航点</button>
           <button class="btn btn-danger" id="stop-btn">紧急悬停</button>
+        </div>
+        <h2>编队队形</h2>
+        <div class="formation-grid" id="formation-grid">
+          <button class="formation-btn" data-formation="v_shape">
+            <span class="formation-icon">✈</span>
+            <span>V 字</span>
+          </button>
+          <button class="formation-btn" data-formation="echelon">
+            <span class="formation-icon">◢</span>
+            <span>梯队</span>
+          </button>
+          <button class="formation-btn" data-formation="circle">
+            <span class="formation-icon">◯</span>
+            <span>圆圈</span>
+          </button>
+          <button class="formation-btn" data-formation="line">
+            <span class="formation-icon">━</span>
+            <span>横队</span>
+          </button>
+          <button class="formation-btn" data-formation="diamond">
+            <span class="formation-icon">◆</span>
+            <span>菱形</span>
+          </button>
+        </div>
+        <div class="planning-status" id="planning-status"></div>
+        <div style="margin-top: 8px;">
+          <button class="btn" id="formation-btn" disabled>执行编队</button>
+          <button class="btn btn-secondary" id="preview-btn">预览队形</button>
         </div>
       </div>
     </div>

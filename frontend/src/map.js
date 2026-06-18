@@ -13,6 +13,8 @@ class DroneMap {
     this.waypoints = [];
     this.waypointMarkers = [];
     this.waypointLines = null;
+    this.formationMarkers = [];
+    this.trajectoryLines = new Map();
     this.clickCallback = null;
 
     this._init();
@@ -229,6 +231,13 @@ class DroneMap {
       }
     }
 
+    for (const marker of this.formationMarkers) {
+      if (marker.userData && marker.userData.pulsePhase !== undefined) {
+        const pulse = 0.8 + 0.2 * Math.sin(time * 2 + marker.userData.pulsePhase);
+        marker.scale.setScalar(pulse);
+      }
+    }
+
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
@@ -378,6 +387,106 @@ class DroneMap {
 
   getWaypoints() {
     return [...this.waypoints];
+  }
+
+  showFormationPreview(targets) {
+    this.clearFormationPreview();
+
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i];
+      const pos = this._latLngToPosition(target.lat, target.lng, target.alt);
+
+      const markerGroup = new THREE.Group();
+
+      const ringGeometry = new THREE.TorusGeometry(6, 0.8, 8, 16);
+      const ringMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffaa00,
+        transparent: true,
+        opacity: 0.7
+      });
+      const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = pos.y;
+      markerGroup.add(ring);
+
+      const poleGeometry = new THREE.CylinderGeometry(0.3, 0.3, pos.y, 8);
+      const poleMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffaa00,
+        transparent: true,
+        opacity: 0.4
+      });
+      const pole = new THREE.Mesh(poleGeometry, poleMaterial);
+      pole.position.y = pos.y / 2;
+      markerGroup.add(pole);
+
+      const spriteMaterial = new THREE.SpriteMaterial({
+        map: this._createTextTexture(`#${i + 1}`),
+        transparent: true
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.position.set(0, pos.y + 15, 0);
+      sprite.scale.set(20, 20, 1);
+      markerGroup.add(sprite);
+
+      markerGroup.position.x = pos.x;
+      markerGroup.position.z = pos.z;
+      markerGroup.userData.pulsePhase = Math.random() * Math.PI * 2;
+      this.formationMarkers.push(markerGroup);
+      this.scene.add(markerGroup);
+    }
+
+    if (targets.length > 1) {
+      const points = targets.map(t => this._latLngToPosition(t.lat, t.lng, t.alt));
+      const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+      const lineMaterial = new THREE.LineDashedMaterial({
+        color: 0xffaa00,
+        linewidth: 2,
+        dashSize: 6,
+        gapSize: 4,
+        transparent: true,
+        opacity: 0.5
+      });
+      const lines = new THREE.Line(lineGeometry, lineMaterial);
+      lines.computeLineDistances();
+      this.formationMarkers.push(lines);
+      this.scene.add(lines);
+    }
+  }
+
+  clearFormationPreview() {
+    for (const marker of this.formationMarkers) {
+      this.scene.remove(marker);
+    }
+    this.formationMarkers = [];
+  }
+
+  updateTrajectoryPreview(trajectories) {
+    this.clearTrajectoryPreview();
+
+    for (const [droneId, points] of trajectories) {
+      if (points.length < 2) continue;
+
+      const linePoints = points.map(p => this._latLngToPosition(p.lat, p.lng, p.alt));
+      const lineGeometry = new THREE.BufferGeometry().setFromPoints(linePoints);
+
+      const hue = droneId / 20;
+      const lineMaterial = new THREE.LineBasicMaterial({
+        color: new THREE.Color().setHSL(hue, 1, 0.6),
+        transparent: true,
+        opacity: 0.6
+      });
+
+      const line = new THREE.Line(lineGeometry, lineMaterial);
+      this.trajectoryLines.set(droneId, line);
+      this.scene.add(line);
+    }
+  }
+
+  clearTrajectoryPreview() {
+    for (const line of this.trajectoryLines.values()) {
+      this.scene.remove(line);
+    }
+    this.trajectoryLines.clear();
   }
 }
 
