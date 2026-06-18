@@ -1,0 +1,20 @@
+{
+  "name": "drone-swarm-control",
+  "version": "1.0.0",
+  "description": "无人机编队控制 Web 系统 - WebTransport + Three.js",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:gateway": "cd gateway && python drone_gateway.py",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "generate:certs": "openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem -days 365 -nodes -subj \"/CN=localhost\""
+  },
+  "keywords": ["webtransport", "drones", "three.js", "node.js"],
+  "author": "",
+  "license": "MIT"
+}

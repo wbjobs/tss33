@@ -1,0 +1,15 @@
+{
+  "name": "drone-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@fails-components/webtransport": "^1.1.0",
+    "node-forge": "^1.4.0",
+    "struct": "^0.0.12"
+  }
+}

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>无人机编队控制系统</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+    #app { width: 100%; height: 100%; position: relative; }
+    #canvas-container { width: 100%; height: 100%; }
+    #ui {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      padding: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      pointer-events: none;
+    }
+    .panel {
+      background: rgba(0, 0, 0, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      padding: 16px;
+      color: white;
+      pointer-events: auto;
+      backdrop-filter: blur(10px);
+    }
+    #status-panel { min-width: 280px; }
+    #control-panel { min-width: 320px; }
+    h1 { font-size: 18px; margin-bottom: 12px; color: #00d4ff; }
+    h2 { font-size: 14px; margin: 12px 0 8px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+    .drone-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      margin: 4px 0;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .drone-id { font-weight: bold; color: #00d4ff; }
+    .drone-battery { color: #ffd700; }
+    .battery-low { color: #ff4444; }
+    .connection-status {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    .connected { background: #00ff88; box-shadow: 0 0 10px #00ff88; }
+    .disconnected { background: #ff4444; }
+    .btn {
+      background: linear-gradient(135deg, #0066ff, #00d4ff);
+      border: none;
+      color: white;
+      padding: 10px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin: 4px;
+      transition: all 0.2s;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 102, 255, 0.4); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { background: linear-gradient(135deg, #666, #888); }
+    .btn-danger { background: linear-gradient(135deg, #ff4444, #ff6666); }
+    input, select {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: white;
+      padding: 8px;
+      border-radius: 4px;
+      margin: 4px;
+      font-size: 13px;
+    }
+    input:focus, select:focus { outline: none; border-color: #00d4ff; }
+    .waypoint-list {
+      max-height: 120px;
+      overflow-y: auto;
+      margin: 8px 0;
+    }
+    .waypoint-item {
+      padding: 6px 10px;
+      margin: 2px 0;
+      background: rgba(0, 212, 255, 0.1);
+      border-radius: 4px;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .hint {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.75);
+      padding: 10px 20px;
+      border-radius: 20px;
+      color: #aaa;
+      font-size: 12px;
+      pointer-events: none;
+    }
+    #latency {
+      font-size: 11px;
+      color: #888;
+      margin-top: 8px;
+    }
+    .latency-good { color: #00ff88; }
+    .latency-bad { color: #ff4444; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="canvas-container"></div>
+    <div id="ui">
+      <div id="status-panel" class="panel">
+        <h1><span class="connection-status" id="conn-status"></span>无人机编队控制</h1>
+        <h2>无人机状态</h2>
+        <div id="drone-list"></div>
+        <div id="latency">延迟: -- ms</div>
+      </div>
+      <div id="control-panel" class="panel">
+        <h1>任务控制</h1>
+        <div>
+          <label>目标无人机:</label>
+          <select id="drone-select">
+            <option value="all">全部无人机</option>
+          </select>
+        </div>
+        <div>
+          <label>飞行模式:</label>
+          <select id="mode-select">
+            <option value="waypoint">航线飞行</option>
+            <option value="hover">悬停</option>
+            <option value="return">返航</option>
+          </select>
+        </div>
+        <div>
+          <label>速度 (m/s):</label>
+          <input type="number" id="speed-input" value="5" min="1" max="20" step="0.5" style="width: 80px;">
+        </div>
+        <h2>航点列表</h2>
+        <div class="waypoint-list" id="waypoint-list">
+          <div style="color: #666; text-align: center; padding: 10px;">点击地图添加航点</div>
+        </div>
+        <div style="margin-top: 8px;">
+          <button class="btn" id="send-btn" disabled>发送任务</button>
+          <button class="btn btn-secondary" id="clear-btn">清除航点</button>
+          <button class="btn btn-danger" id="stop-btn">紧急悬停</button>
+        </div>
+      </div>
+    </div>
+    <div class="hint">左键拖动旋转视角 | 右键拖动平移 | 滚轮缩放 | 点击地图添加航点</div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
