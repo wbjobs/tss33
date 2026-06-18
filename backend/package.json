@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@fails-components/webtransport": "^1.1.0",
-    "node-forge": "^1.4.0",
     "struct": "^0.0.12"
   }
 }
